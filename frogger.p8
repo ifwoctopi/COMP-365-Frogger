@@ -1,14 +1,17 @@
+pico-8 cartridge // http://www.pico-8.com
+version 43
+__lua__
 -- frogger.p8
--- A classic Frogger game for Pico-8
+-- a classic frogger game for pico-8
 
--- Game state constants
-MENU = 0
-PLAYING = 1
-GAME_OVER = 2
-PAUSED = 3
+-- game state constants
+menu = 0
+playing = 1
+game_over = 2
+paused = 3
 
--- Game variables
-game_state = MENU
+-- game variables
+game_state = menu
 score = 0
 lives = 3
 level = 1
@@ -19,45 +22,45 @@ frog_target_y = 112
 frog_speed = 8
 frog_size = 4
 
--- Car variables
+-- car variables
 cars = {}
 car_speed = 1
 car_spawn_timer = 0
 car_spawn_delay = 60
 
--- Log variables
+-- log variables
 logs = {}
 log_speed = 0.5
 log_spawn_timer = 0
 log_spawn_delay = 90
 
--- Water variables
+-- water variables
 water_y = 32
 water_height = 32
 
--- Home variables
+-- home variables
 homes = {}
 home_y = 16
 home_width = 16
 home_height = 8
 
--- Colors
-BG_COLOR = 0
-FROG_COLOR = 11
-CAR_COLOR = 8
-LOG_COLOR = 6
-WATER_COLOR = 12
-ROAD_COLOR = 5
-GRASS_COLOR = 3
-HOME_COLOR = 10
+-- colors
+bg_color = 0
+frog_color = 11
+car_color = 8
+log_color = 6
+water_color = 12
+road_color = 5
+grass_color = 3
+home_color = 10
 
 function _init()
-    -- Initialize homes
+    -- initialize homes
     for i = 0, 4 do
         add(homes, {x = i * 32 + 8, y = home_y, occupied = false})
     end
     
-    -- Initialize first car
+    -- initialize first car
     add_car()
 end
 
@@ -87,9 +90,9 @@ function add_log()
 end
 
 function update_frog()
-    if game_state ~= PLAYING then return end
+    if game_state ~= playing then return end
     
-    -- Move frog towards target
+    -- move frog towards target
     local dx = frog_target_x - frog_x
     local dy = frog_target_y - frog_y
     
@@ -105,7 +108,7 @@ function update_frog()
         frog_y = frog_target_y
     end
     
-    -- Check if frog reached home
+    -- check if frog reached home
     for home in all(homes) do
         if not home.occupied and 
            frog_x >= home.x and frog_x <= home.x + home_width and
@@ -119,7 +122,7 @@ function update_frog()
         end
     end
     
-    -- Check if all homes are occupied
+    -- check if all homes are occupied
     local all_occupied = true
     for home in all(homes) do
         if not home.occupied then
@@ -129,7 +132,7 @@ function update_frog()
     end
     
     if all_occupied then
-        -- Level complete
+        -- level complete
         for home in all(homes) do
             home.occupied = false
         end
@@ -145,31 +148,31 @@ function reset_frog()
 end
 
 function check_collisions()
-    if game_state ~= PLAYING then return end
+    if game_state ~= playing then return end
     
-    -- Check car collisions
+    -- check car collisions
     for car in all(cars) do
         if frog_x < car.x + car.width and
            frog_x + frog_size > car.x and
            frog_y < car.y + car.height and
            frog_y + frog_size > car.y then
-            -- Frog hit by car
+            -- frog hit by car
             lives -= 1
             reset_frog()
             if lives <= 0 then
-                game_state = GAME_OVER
+                game_state = game_over
             end
         end
     end
     
-    -- Check water collisions
+    -- check water collisions
     if frog_y >= water_y and frog_y < water_y + water_height then
         local on_log = false
         for log in all(logs) do
             if frog_x >= log.x and frog_x <= log.x + log.width and
                frog_y >= log.y and frog_y <= log.y + log.height then
                 on_log = true
-                -- Move with log
+                -- move with log
                 frog_x += log.speed
                 frog_target_x += log.speed
                 break
@@ -177,16 +180,16 @@ function check_collisions()
         end
         
         if not on_log then
-            -- Frog in water without log
+            -- frog in water without log
             lives -= 1
             reset_frog()
             if lives <= 0 then
-                game_state = GAME_OVER
+                game_state = game_over
             end
         end
     end
     
-    -- Keep frog on screen
+    -- keep frog on screen
     if frog_x < 0 then frog_x = 0 frog_target_x = 0 end
     if frog_x > 120 then frog_x = 120 frog_target_x = 120 end
     if frog_y < 0 then frog_y = 0 frog_target_y = 0 end
@@ -197,13 +200,13 @@ function update_cars()
     for car in all(cars) do
         car.x += car.speed
         
-        -- Remove cars that are off screen
+        -- remove cars that are off screen
         if car.x < -20 or car.x > 140 then
             del(cars, car)
         end
     end
     
-    -- Spawn new cars
+    -- spawn new cars
     car_spawn_timer += 1
     if car_spawn_timer >= car_spawn_delay then
         add_car()
@@ -215,13 +218,13 @@ function update_logs()
     for log in all(logs) do
         log.x += log.speed
         
-        -- Remove logs that are off screen
+        -- remove logs that are off screen
         if log.x < -30 or log.x > 150 then
             del(logs, log)
         end
     end
     
-    -- Spawn new logs
+    -- spawn new logs
     log_spawn_timer += 1
     if log_spawn_timer >= log_spawn_delay then
         add_log()
@@ -230,24 +233,24 @@ function update_logs()
 end
 
 function _update()
-    if game_state == MENU then
-        if btnp(5) then -- X button
-            game_state = PLAYING
+    if game_state == menu then
+        if btnp(5) then -- x button
+            game_state = playing
         end
-    elseif game_state == PLAYING then
-        -- Handle input
-        if btnp(0) and frog_y > 0 then -- Left
+    elseif game_state == playing then
+        -- handle input
+        if btnp(0) and frog_y > 0 then -- left
             frog_target_x = max(0, frog_target_x - 16)
-        elseif btnp(1) and frog_y > 0 then -- Right
+        elseif btnp(1) and frog_y > 0 then -- right
             frog_target_x = min(120, frog_target_x + 16)
-        elseif btnp(2) and frog_y > 0 then -- Up
+        elseif btnp(2) and frog_y > 0 then -- up
             frog_target_y = max(0, frog_target_y - 16)
-        elseif btnp(3) and frog_y < 120 then -- Down
+        elseif btnp(3) and frog_y < 120 then -- down
             frog_target_y = min(120, frog_target_y + 16)
         end
         
-        if btnp(4) then -- O button
-            game_state = PAUSED
+        if btnp(4) then -- o button
+            game_state = paused
         end
         
         update_frog()
@@ -255,17 +258,17 @@ function _update()
         update_logs()
         check_collisions()
         
-    elseif game_state == PAUSED then
-        if btnp(4) then -- O button
-            game_state = PLAYING
+    elseif game_state == paused then
+        if btnp(4) then -- o button
+            game_state = playing
         end
-        if btnp(5) then -- X button
-            game_state = MENU
+        if btnp(5) then -- x button
+            game_state = menu
         end
-    elseif game_state == GAME_OVER then
-        if btnp(5) then -- X button
-            -- Reset game
-            game_state = MENU
+    elseif game_state == game_over then
+        if btnp(5) then -- x button
+            -- reset game
+            game_state = menu
             score = 0
             lives = 3
             level = 1
@@ -282,20 +285,20 @@ function _update()
 end
 
 function draw_background()
-    -- Sky
-    rectfill(0, 0, 127, 15, BG_COLOR)
+    -- sky
+    rectfill(0, 0, 127, 15, bg_color)
     
-    -- Water
-    rectfill(0, water_y, 127, water_y + water_height, WATER_COLOR)
+    -- water
+    rectfill(0, water_y, 127, water_y + water_height, water_color)
     
-    -- Road
-    rectfill(0, 80, 127, 95, ROAD_COLOR)
+    -- road
+    rectfill(0, 80, 127, 95, road_color)
     
-    -- Grass
-    rectfill(0, 96, 127, 111, GRASS_COLOR)
-    rectfill(0, 112, 127, 127, GRASS_COLOR)
+    -- grass
+    rectfill(0, 96, 127, 111, grass_color)
+    rectfill(0, 112, 127, 127, grass_color)
     
-    -- Road lines
+    -- road lines
     for i = 0, 7 do
         rectfill(i * 16, 87, i * 16 + 8, 88, 7)
     end
@@ -303,16 +306,16 @@ end
 
 function draw_homes()
     for home in all(homes) do
-        local color = home.occupied and 2 or HOME_COLOR
+        local color = home.occupied and 2 or home_color
         rectfill(home.x, home.y, home.x + home_width, home.y + home_height, color)
         rect(home.x, home.y, home.x + home_width, home.y + home_height, 0)
     end
 end
 
 function draw_frog()
-    if game_state == PLAYING or game_state == PAUSED then
-        circfill(frog_x + 2, frog_y + 2, 2, FROG_COLOR)
-        circfill(frog_x + 2, frog_y + 2, 1, 0)
+    if game_state == playing or game_state == paused then
+        spr(001,frog_x + 2, frog_y + 2)
+        spr(001,frog_x + 2, frog_y + 2)
     end
 end
 
@@ -325,25 +328,25 @@ end
 
 function draw_logs()
     for log in all(logs) do
-        rectfill(log.x, log.y, log.x + log.width, log.y + log.height, LOG_COLOR)
+        rectfill(log.x, log.y, log.x + log.width, log.y + log.height, log_color)
         rect(log.x, log.y, log.x + log.width, log.y + log.height, 0)
     end
 end
 
 function draw_ui()
-    -- Score
+    -- score
     print("score: " .. score, 2, 2, 7)
     print("lives: " .. lives, 2, 10, 7)
     print("level: " .. level, 100, 2, 7)
     
-    if game_state == MENU then
+    if game_state == menu then
         print("frogger", 40, 50, 11)
         print("press x to start", 30, 60, 7)
-    elseif game_state == PAUSED then
+    elseif game_state == paused then
         print("paused", 50, 60, 7)
         print("press o to resume", 30, 70, 7)
         print("press x for menu", 30, 80, 7)
-    elseif game_state == GAME_OVER then
+    elseif game_state == game_over then
         print("game over", 40, 50, 8)
         print("final score: " .. score, 30, 60, 7)
         print("press x to restart", 25, 70, 7)
@@ -351,9 +354,9 @@ function draw_ui()
 end
 
 function _draw()
-    cls(BG_COLOR)
+    cls(bg_color)
     
-    if game_state == PLAYING or game_state == PAUSED then
+    if game_state == playing or game_state == paused then
         draw_background()
         draw_homes()
         draw_logs()
@@ -363,3 +366,11 @@ function _draw()
     
     draw_ui()
 end
+__gfx__
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00700700001707100037073000270720004707400027072000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00077000001ccc10003bbb30002eee2000499940002ddd2000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00077000000c1c00000b3b00000e2e0000094900000d2d0000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00700700001ccc10003bbb30002eee2000499940002ddd2000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000001000100030003000200020004000400020002000000000000000000000000000000000000000000000000000000000000000000000000000000000
