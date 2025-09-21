@@ -29,6 +29,7 @@ frog_size = 8       -- 8x8 sprite
 score = 0
 lives = 3
 level = 1
+high_score = 0
 
 leaderboard_scores = {}
 -- leaderboard add (manual sort)
@@ -499,7 +500,7 @@ end
 -- ui
 function draw_ui()
     if game_state == menu then
-        print("frogger+", 44, 40, 11)
+        print("frogger", 47, 42, 11)
         print("press x for intro", 28, 60, 7)
     elseif game_state == intro then
         print("instructions", 40, 20, 11)
@@ -512,9 +513,15 @@ function draw_ui()
         print("press o to resume", 26, 70, 7)
         print("press x for menu", 28, 80, 7)
     elseif game_state == game_over then
+    				-- update high score if the current score is higher
+				    if score > high_score then
+				       high_score = score
+				    end
+    				cls(0)
         print("game over", 44, 40, 8)
         print("final score: "..score, 36, 55, 7)
-        print("press x for leaderboard", 20, 75, 7)
+        print("high score: "..high_score, 38, 65, 7)
+        print("press x for menu", 32, 75, 7)
     elseif game_state == leaderboard then
         print("leaderboard", 40, 20, 11)
         for i=1,#leaderboard_scores do
@@ -585,8 +592,7 @@ function _update()
 
     elseif game_state == game_over then
         if btnp(5) then
-            add_score(score)
-            game_state = leaderboard
+            game_state = menu
         end
 
     elseif game_state == leaderboard then
