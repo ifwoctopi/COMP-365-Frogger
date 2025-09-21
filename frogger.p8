@@ -1,371 +1,466 @@
 pico-8 cartridge // http://www.pico-8.com
 version 43
 __lua__
--- frogger.p8
--- a classic frogger game for pico-8
+-- frogger_dynamic_map.p8
+-- full pico-8 frogger with dynamic map regeneration on score,
+-- progressive difficulty, cars only on roads, logs only on water,
+-- top row = homes, bottom row = grass
 
--- game state constants
+-- game states
 menu = 0
 playing = 1
-game_over = 2
-paused = 3
+paused = 2
+game_over = 3
 
--- game variables
+-- state
 game_state = menu
-score = 0
-lives = 3
-level = 1
+
+-- player
 frog_x = 64
 frog_y = 112
 frog_target_x = 64
 frog_target_y = 112
-frog_speed = 8
-frog_size = 4
+frog_speed = 4      -- smooth move speed (px per frame)
+frog_size = 8       -- 8x8 sprite
 
--- car variables
+-- score / lives / level
+score = 0
+lives = 3
+level = 1
+
+-- homes (top row)
+homes = {}
+home_y = 4
+home_w = 16
+home_h = 8
+
+-- map rows (8 rows of 16px each => 128px height)
+-- map_rows[1] is top (y=0), map_rows[8] is bottom (y=112)
+map_rows = {}
+
+-- cars
 cars = {}
 car_speed = 1
 car_spawn_timer = 0
-car_spawn_delay = 60
+car_spawn_delay = 40
 
--- log variables
+-- logs
 logs = {}
-log_speed = 0.5
+log_speed_base = 0.6
+log_speed_range = 0.2
 log_spawn_timer = 0
-log_spawn_delay = 90
+log_spawn_delay = 70
+log_w = 32
+log_h = 16
 
--- water variables
-water_y = 32
-water_height = 32
+-- progressive difficulty (per frame)
+car_speed_increment = 0.0008
+log_speed_increment = 0.0005
 
--- home variables
-homes = {}
-home_y = 16
-home_width = 16
-home_height = 8
+-- tile sprite ranges for terrain (keeps the sprite-tiled look)
+tile_water = {192,208}
+tile_road  = {200,216}
+tile_grass = {224,240}
 
--- colors
-bg_color = 0
-frog_color = 11
-car_color = 8
-log_color = 6
-water_color = 12
-road_color = 5
-grass_color = 3
-home_color = 10
-
-function _init()
-    -- initialize homes
-    for i = 0, 4 do
-        add(homes, {x = i * 32 + 8, y = home_y, occupied = false})
-    end
-    
-    -- initialize first car
-    add_car()
+-- util: clamp
+function clamp(v, a, b)
+    if v < a then return a end
+    if v > b then return b end
+    return v
 end
 
+-- init
+function _init()
+    -- homes (5 slots)
+    homes = {}
+    for i=0,4 do
+        add(homes, {x = i * 24 + 8, y = home_y})
+    end
+
+    generate_map()
+end
+
+-- generate_map: top = homes, bottom = grass, middle 6 rows randomized
+function generate_map()
+    -- clear existing cars/logs to avoid leftover objects on wrong rows
+    cars = {}
+    logs = {}
+
+    map_rows = {}
+
+    -- row 1: homes
+    add(map_rows, "homes")
+
+    -- middle 6 rows: mix of road, water, grass (two of each to keep variety)
+    local chunks = {"road","road","water","water","grass","grass"}
+
+    -- fisher-yates shuffle
+    for i=#chunks,2,-1 do
+        local j = flr(rnd(i)) + 1
+        chunks[i], chunks[j] = chunks[j], chunks[i]
+    end
+
+    for c in all(chunks) do
+        add(map_rows, c)
+    end
+
+    -- row 8: bottom spawn grass
+    add(map_rows, "grass")
+end
+
+-- get y positions (top-left) for rows of a given type
+function get_row_y_positions(row_type)
+    local ys = {}
+    for i=1,#map_rows do
+        if map_rows[i] == row_type then
+            local y = (i-1) * 16
+            add(ys, y)
+        end
+    end
+    return ys
+end
+
+-- add a car on a random road row
 function add_car()
-    local direction = rnd(2) > 1 and 1 or -1
-    local y = 80 + flr(rnd(3)) * 8
+    local road_rows = get_row_y_positions("road")
+    if #road_rows == 0 then return end
+
+    -- pick a random road row
+    local y = road_rows[flr(rnd(#road_rows))+1]
+    -- small vertical offset to center car inside the 16px band
+    local car_y = y + 4
+
+    local dir = rnd(2) > 1 and 1 or -1
+    local sx = dir == 1 and -20 or 148
+    local speed = dir * (car_speed + level * 0.35)
+
     add(cars, {
-        x = direction > 0 and -16 or 128,
-        y = y,
-        width = 12,
-        height = 6,
-        speed = direction * (car_speed + level * 0.5),
+        x = sx,
+        y = car_y,
+        w = 12,
+        h = 6,
+        speed = speed,
         color = 8 + flr(rnd(3))
     })
 end
 
+-- add a log on a random water row
 function add_log()
-    local direction = rnd(2) > 1 and 1 or -1
-    local y = water_y + 8 + flr(rnd(3)) * 8
+    local water_rows = get_row_y_positions("water")
+    if #water_rows == 0 then return end
+
+    local y = water_rows[flr(rnd(#water_rows))+1]
+    local dir = rnd(2) > 1 and 1 or -1
+    local sx = dir == 1 and -40 or 148
+    local speed_variation = rnd(log_speed_range) - (log_speed_range/2)
+    local speed = dir * (log_speed_base + speed_variation)
+
     add(logs, {
-        x = direction > 0 and -24 or 128,
-        y = y,
-        width = 20,
-        height = 8,
-        speed = direction * (log_speed + level * 0.3)
+        x = sx,
+        y = y,       -- occupy full 16px tall water row
+        w = log_w,
+        h = log_h,
+        speed = speed
     })
 end
 
+-- frog movement (smooth toward target)
 function update_frog()
     if game_state ~= playing then return end
-    
-    -- move frog towards target
+
+    -- input (grid steps of 8 using btnp)
+    if btnp(0) then frog_target_x = clamp(frog_target_x - 8, 0, 120) end
+    if btnp(1) then frog_target_x = clamp(frog_target_x + 8, 0, 120) end
+    if btnp(2) then frog_target_y = clamp(frog_target_y - 8, 0, 120) end
+    if btnp(3) then frog_target_y = clamp(frog_target_y + 8, 0, 120) end
+
+    -- smooth movement toward target
     local dx = frog_target_x - frog_x
     local dy = frog_target_y - frog_y
-    
-    if abs(dx) > 1 then
-        frog_x += sgn(dx) * frog_speed
+
+    if abs(dx) > frog_speed then
+        frog_x = frog_x + sgn(dx) * frog_speed
     else
         frog_x = frog_target_x
     end
-    
-    if abs(dy) > 1 then
-        frog_y += sgn(dy) * frog_speed
+
+    if abs(dy) > frog_speed then
+        frog_y = frog_y + sgn(dy) * frog_speed
     else
         frog_y = frog_target_y
     end
-    
-    -- check if frog reached home
+
+    -- check if reached any home slot (top row)
     for home in all(homes) do
-        if not home.occupied and 
-           frog_x >= home.x and frog_x <= home.x + home_width and
-           frog_y >= home.y and frog_y <= home.y + home_height then
-            home.occupied = true
-            score += 100 * level
-            level += 1
-            reset_frog()
-            car_speed += 0.2
-            log_speed += 0.1
+        if frog_x + frog_size > home.x and frog_x < home.x + home_w and
+           frog_y + frog_size > home.y and frog_y < home.y + home_h then
+            -- score
+            score = score + (100 * level)
+            level = level + 1
+            -- increase difficulty on scoring
+            car_speed = car_speed + 0.2
+            log_speed_base = log_speed_base + 0.1
+            -- regenerate map and clear dynamic objects
+            generate_map()
+            -- reset frog to start position
+            frog_target_x = 64
+            frog_target_y = 112
+            frog_x = frog_target_x
+            frog_y = frog_target_y
+            return
         end
     end
-    
-    -- check if all homes are occupied
-    local all_occupied = true
-    for home in all(homes) do
-        if not home.occupied then
-            all_occupied = false
+end
+
+-- collisions & water handling
+function check_collisions()
+    if game_state ~= playing then return end
+
+    -- car collisions
+    for car in all(cars) do
+        if frog_x < car.x + car.w and
+           frog_x + frog_size > car.x and
+           frog_y < car.y + car.h and
+           frog_y + frog_size > car.y then
+            -- hit
+            lives = lives - 1
+            frog_target_x = 64
+            frog_target_y = 112
+            frog_x = frog_target_x
+            frog_y = frog_target_y
+            if lives <= 0 then
+                game_state = game_over
+            end
+            return
+        end
+    end
+
+    -- water collision: determine if frog is in any water band
+    local water_rows = get_row_y_positions("water")
+    local in_water = false
+    for y in all(water_rows) do
+        if frog_y >= y and frog_y < y + 16 then
+            in_water = true
             break
         end
     end
-    
-    if all_occupied then
-        -- level complete
-        for home in all(homes) do
-            home.occupied = false
-        end
-        reset_frog()
-    end
-end
 
-function reset_frog()
-    frog_x = 64
-    frog_y = 112
-    frog_target_x = 64
-    frog_target_y = 112
-end
-
-function check_collisions()
-    if game_state ~= playing then return end
-    
-    -- check car collisions
-    for car in all(cars) do
-        if frog_x < car.x + car.width and
-           frog_x + frog_size > car.x and
-           frog_y < car.y + car.height and
-           frog_y + frog_size > car.y then
-            -- frog hit by car
-            lives -= 1
-            reset_frog()
-            if lives <= 0 then
-                game_state = game_over
-            end
-        end
-    end
-    
-    -- check water collisions
-    if frog_y >= water_y and frog_y < water_y + water_height then
+    if in_water then
+        -- check logs for carry
         local on_log = false
         for log in all(logs) do
-            if frog_x >= log.x and frog_x <= log.x + log.width and
-               frog_y >= log.y and frog_y <= log.y + log.height then
+            if frog_x + frog_size > log.x and frog_x < log.x + log.w and
+               frog_y + frog_size > log.y and frog_y < log.y + log.h then
                 on_log = true
-                -- move with log
-                frog_x += log.speed
-                frog_target_x += log.speed
+                -- carry frog with log
+                frog_x = frog_x + log.speed
+                frog_target_x = frog_target_x + log.speed
                 break
             end
         end
-        
+
         if not on_log then
-            -- frog in water without log
-            lives -= 1
-            reset_frog()
+            -- drown
+            lives = lives - 1
+            frog_target_x = 64
+            frog_target_y = 112
+            frog_x = frog_target_x
+            frog_y = frog_target_y
             if lives <= 0 then
                 game_state = game_over
             end
+            return
         end
     end
-    
-    -- keep frog on screen
-    if frog_x < 0 then frog_x = 0 frog_target_x = 0 end
-    if frog_x > 120 then frog_x = 120 frog_target_x = 120 end
-    if frog_y < 0 then frog_y = 0 frog_target_y = 0 end
-    if frog_y > 120 then frog_y = 120 frog_target_y = 120 end
+
+    -- clamp frog to screen
+    frog_x = clamp(frog_x, 0, 120)
+    frog_target_x = clamp(frog_target_x, 0, 120)
+    frog_y = clamp(frog_y, 0, 120)
+    frog_target_y = clamp(frog_target_y, 0, 120)
 end
 
+-- update cars: move and remove off-screen
 function update_cars()
     for car in all(cars) do
-        car.x += car.speed
-        
-        -- remove cars that are off screen
-        if car.x < -20 or car.x > 140 then
+        car.x = car.x + car.speed
+        if car.x < -40 or car.x > 180 then
             del(cars, car)
         end
     end
-    
-    -- spawn new cars
-    car_spawn_timer += 1
+
+    car_spawn_timer = car_spawn_timer + 1
     if car_spawn_timer >= car_spawn_delay then
         add_car()
         car_spawn_timer = 0
     end
 end
 
+-- update logs
 function update_logs()
     for log in all(logs) do
-        log.x += log.speed
-        
-        -- remove logs that are off screen
-        if log.x < -30 or log.x > 150 then
+        log.x = log.x + log.speed
+        if log.x < -80 or log.x > 200 then
             del(logs, log)
         end
     end
-    
-    -- spawn new logs
-    log_spawn_timer += 1
+
+    log_spawn_timer = log_spawn_timer + 1
     if log_spawn_timer >= log_spawn_delay then
         add_log()
         log_spawn_timer = 0
     end
 end
 
-function _update()
-    if game_state == menu then
-        if btnp(5) then -- x button
-            game_state = playing
-        end
-    elseif game_state == playing then
-        -- handle input
-        if btnp(0) and frog_y > 0 then -- left
-            frog_target_x = max(0, frog_target_x - 16)
-        elseif btnp(1) and frog_y > 0 then -- right
-            frog_target_x = min(120, frog_target_x + 16)
-        elseif btnp(2) and frog_y > 0 then -- up
-            frog_target_y = max(0, frog_target_y - 16)
-        elseif btnp(3) and frog_y < 120 then -- down
-            frog_target_y = min(120, frog_target_y + 16)
-        end
-        
-        if btnp(4) then -- o button
-            game_state = paused
-        end
-        
-        update_frog()
-        update_cars()
-        update_logs()
-        check_collisions()
-        
-    elseif game_state == paused then
-        if btnp(4) then -- o button
-            game_state = playing
-        end
-        if btnp(5) then -- x button
-            game_state = menu
-        end
-    elseif game_state == game_over then
-        if btnp(5) then -- x button
-            -- reset game
-            game_state = menu
-            score = 0
-            lives = 3
-            level = 1
-            car_speed = 1
-            log_speed = 0.5
-            cars = {}
-            logs = {}
-            for home in all(homes) do
-                home.occupied = false
-            end
-            reset_frog()
-        end
+-- background terrain drawing helper (two rows of 8x8 sprites)
+function draw_terrain(rows, dx, dy)
+    for i=0,7 do
+        spr(rows[1] + i, dx + i*8, dy)
+    end
+    for i=0,7 do
+        spr(rows[2] + i, dx + i*8, dy + 8)
     end
 end
 
+-- draw homes (top row visuals + home slots)
+function draw_homes_row()
+    -- optional background tile for top (can be sprite-based)
+    -- draw the home slots using the homes table
+    for h in all(homes) do
+        rectfill(h.x, h.y, h.x + home_w, h.y + home_h, 10)
+        rect(h.x, h.y, h.x + home_w, h.y + home_h, 0)
+    end
+end
+
+-- draw background based on map_rows
 function draw_background()
-    -- sky
-    rectfill(0, 0, 127, 15, bg_color)
-    
-    -- water
-    rectfill(0, water_y, 127, water_y + water_height, water_color)
-    
-    -- road
-    rectfill(0, 80, 127, 95, road_color)
-    
-    -- grass
-    rectfill(0, 96, 127, 111, grass_color)
-    rectfill(0, 112, 127, 127, grass_color)
-    
-    -- road lines
-    for i = 0, 7 do
-        rectfill(i * 16, 87, i * 16 + 8, 88, 7)
+    cls(0)
+    for i=1,#map_rows do
+        local row = map_rows[i]
+        local y = (i-1) * 16
+        if row == "grass" then
+            draw_terrain(tile_grass, 0, y)
+            draw_terrain(tile_grass, 64, y)
+        elseif row == "road" then
+            draw_terrain(tile_road, 0, y)
+            draw_terrain(tile_road, 64, y)
+        elseif row == "water" then
+            draw_terrain(tile_water, 0, y)
+            draw_terrain(tile_water, 64, y)
+        elseif row == "homes" then
+            -- draw top row background (could be sky or tile)
+            -- then draw home slots
+            draw_homes_row()
+        end
     end
 end
 
-function draw_homes()
-    for home in all(homes) do
-        local color = home.occupied and 2 or home_color
-        rectfill(home.x, home.y, home.x + home_width, home.y + home_height, color)
-        rect(home.x, home.y, home.x + home_width, home.y + home_height, 0)
-    end
-end
-
-function draw_frog()
-    if game_state == playing or game_state == paused then
-        spr(001,frog_x + 2, frog_y + 2)
-        spr(001,frog_x + 2, frog_y + 2)
+-- draw dynamic objects
+function draw_logs()
+    for log in all(logs) do
+        rectfill(log.x, log.y, log.x + log.w, log.y + log.h, 6)
+        rect(log.x, log.y, log.x + log.w, log.y + log.h, 0)
     end
 end
 
 function draw_cars()
     for car in all(cars) do
-        rectfill(car.x, car.y, car.x + car.width, car.y + car.height, car.color)
-        rect(car.x, car.y, car.x + car.width, car.y + car.height, 0)
+        rectfill(car.x, car.y, car.x + car.w, car.y + car.h, car.color)
+        rect(car.x, car.y, car.x + car.w, car.y + car.h, 0)
     end
 end
 
-function draw_logs()
-    for log in all(logs) do
-        rectfill(log.x, log.y, log.x + log.width, log.y + log.height, log_color)
-        rect(log.x, log.y, log.x + log.width, log.y + log.height, 0)
-    end
+function draw_frog()
+    spr(1, frog_x, frog_y) -- assumes sprite 1 is frog (8x8)
 end
 
+-- ui
 function draw_ui()
-    -- score
-    print("score: " .. score, 2, 2, 7)
-    print("lives: " .. lives, 2, 10, 7)
-    print("level: " .. level, 100, 2, 7)
-    
+    print("score: "..score, 2, 2, 7)
+    print("lives: "..lives, 2, 10, 7)
+    print("level: "..level, 90, 2, 7)
+
     if game_state == menu then
-        print("frogger", 40, 50, 11)
-        print("press x to start", 30, 60, 7)
+        print("frogger", 44, 52, 11)
+        print("press x to start", 30, 68, 7)
     elseif game_state == paused then
-        print("paused", 50, 60, 7)
-        print("press o to resume", 30, 70, 7)
-        print("press x for menu", 30, 80, 7)
+        print("paused", 52, 56, 7)
+        print("press o to resume", 26, 70, 7)
     elseif game_state == game_over then
-        print("game over", 40, 50, 8)
-        print("final score: " .. score, 30, 60, 7)
-        print("press x to restart", 25, 70, 7)
+        print("game over", 36, 50, 8)
+        print("final score: "..score, 28, 64, 7)
+        print("press x to restart", 22, 80, 7)
     end
 end
 
-function _draw()
-    cls(bg_color)
-    
-    if game_state == playing or game_state == paused then
-        draw_background()
-        draw_homes()
-        draw_logs()
-        draw_cars()
-        draw_frog()
+-- main update
+function _update()
+    -- global controls
+    if game_state == menu then
+        if btnp(5) then -- x to start
+            -- reset core game vars
+            score = 0
+            level = 1
+            lives = 3
+            car_speed = 1
+            log_speed_base = 0.6
+            cars = {}
+            logs = {}
+            car_spawn_timer = 0
+            log_spawn_timer = 0
+            generate_map()
+            frog_target_x = 64
+            frog_target_y = 112
+            frog_x = frog_target_x
+            frog_y = frog_target_y
+            game_state = playing
+        end
+    elseif game_state == playing then
+        -- input pause
+        if btnp(4) then game_state = paused end
+
+        -- progressive difficulty over time
+        car_speed = car_speed + car_speed_increment
+        log_speed_base = log_speed_base + log_speed_increment
+
+        -- update frog movement
+        update_frog()
+
+        -- update dynamic objects
+        update_cars()
+        update_logs()
+
+        -- check collisions / water handling
+        check_collisions()
+
+    elseif game_state == paused then
+        if btnp(4) then game_state = playing end
+        if btnp(5) then
+            game_state = menu
+        end
+    elseif game_state == game_over then
+        if btnp(5) then
+            -- restart to menu (user can start fresh)
+            game_state = menu
+        end
     end
-    
-    draw_ui()
 end
+
+-- main draw
+function _draw()
+    cls(0)
+    
+    if game_state == playing or gamestate == game_over then
+				    draw_background()
+				    -- draw dynamic things in sensible order
+				    draw_logs()
+				    draw_cars()
+				    draw_frog()
+				end
+				
+				draw_ui()
+end
+
 __gfx__
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
@@ -374,3 +469,124 @@ __gfx__
 00077000000c1c00000b3b00000e2e0000094900000d2d0000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00700700001ccc10003bbb30002eee2000499940002ddd2000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000001000100030003000200020004000400020002000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+cccccccccccccccccccccc777cccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+cccccccccccccccccc77777777ccccccccccccccccccccccccc7777777777cccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+cccccccccccccccc77ccccccc77ccccccccccccccccccccc777ccccccccc77ccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+cccccccc77ccccc77ccccccccc77cccccccccccc77ccccc77cccccccccccc77cdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+ccccccc777777c7ccccccccccccc7cccccccccc777777c7cccccccccccccccc7dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+ccccc77ccccc777cccccccccccccc7ccccccc77ccccc777cccccccccccccccccaaaadddaaaaaadddaaaaaddaaaaaadddaaaadddaaaaaadddaaaaaddaaaaaaddd
+7ccc77ccccccccccccccccccccccc77c7ccc77ccccccccccccccccccccccccccaaaadddaaaaaadddaaaaaddaaaaaadddaaaadddaaaaaadddaaaaaddaaaaaaddd
+77777cccccccccccccccccccccccccc777777cccccccccccccccccccccccccccaaaadddaaaaaadddaaaaaddaaaaaadddaaaadddaaaaaadddaaaaaddaaaaaaddd
+ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccaaaadddaaaaaadddaaaaaddaaaaaadddaaaadddaaaaaadddaaaaaddaaaaaaddd
+cccc777ccccccccccccccccccccccccccccc777cccccccccccccccccccccccccaaaadddaaaaaadddaaaaaddaaaaaadddaaaadddaaaaaadddaaaaaddaaaaaaddd
+ccc77c77ccccccccccccccccccccccccccc77c77ccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+c77ccccc77cccc7777ccccccccccccccc77ccccc77cccc777777ccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+7ccccccccc77777cc77cccc7777ccc7777cccccccc77777ccccc7777ccccc777dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+ccccccccccccccccccc77777c777777ccccccccccccccccccccccccc777777ccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+33333333333333333333333333333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000000
+33333333333333333333333333333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000000
+33333333333333333333333333333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000000
+3333bb33333333333333bb33333333333333bb33333333333333bb33333333330000000000000000000000000000000000000000000000000000000000000000
+333b3bb333333333333b3bb333333333333b3bb333333333333b3bb3333333330000000000000000000000000000000000000000000000000000000000000000
+33b333bb3333333333b333bb3333333333b333bb3333333333b333bb333333330000000000000000000000000000000000000000000000000000000000000000
+3bb3333bb33333333bb3333bb33333333bb3333bb33333333bb3333bb33333330000000000000000000000000000000000000000000000000000000000000000
+33333333333333333333333333333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000000
+33333333333333333333333333333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000000
+333333333333bb33333333333333bb33333333333333bb33333333333333bb330000000000000000000000000000000000000000000000000000000000000000
+333333333333bb33333333333333bb33333333333333bb33333333333333bb330000000000000000000000000000000000000000000000000000000000000000
+33333333333b3bb333333333333b3bb333333333333b3bb333333333333b3bb30000000000000000000000000000000000000000000000000000000000000000
+3333333333bb33bb3333333333bb33bb3333333333bb33bb3333333333bb33bb0000000000000000000000000000000000000000000000000000000000000000
+3333333333b3333b3333333333b3333b3333333333b3333b3333333333b3333b0000000000000000000000000000000000000000000000000000000000000000
+33333333333333333333333333333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000000
+33333333333333333333333333333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000000
