@@ -1,23 +1,24 @@
 pico-8 cartridge // http://www.pico-8.com
 version 43
 __lua__
--- frogger_dynamic_map_v3.p8
+-- frogger_dynamic_map.p8
 -- full pico-8 frogger with dynamic map regeneration on score,
 -- progressive difficulty, cars only on roads, logs only on water,
 -- top row = homes, bottom row = grass
--- features: music, intro screen, and a cleaner game-state flow
 
 -- game states
 menu = 0
-intro = 1
-playing = 2
-paused = 3
-game_over = 4
+playing = 1
+paused = 2
+game_over = 3
+char_select = 4  
 
 -- state
 game_state = menu
 
 -- player
+selected_char = 1  -- default frog sprite
+
 frog_x = 64
 frog_y = 112
 frog_target_x = 64
@@ -25,13 +26,50 @@ frog_target_y = 112
 frog_speed = 4      -- smooth move speed (px per frame)
 frog_size = 8       -- 8x8 sprite
 
--- score / lives / level
 score = 0
 lives = 3
 level = 1
-high_score = 0      -- new variable to track the highest score
+
+leaderboard_scores = {}
+-- leaderboard add (manual sort)
+function add_score(s)
+    add(leaderboard_scores, s)
+    -- sort descending
+    for i=1,#leaderboard_scores-1 do
+        for j=i+1,#leaderboard_scores do
+            if leaderboard_scores[j] > leaderboard_scores[i] then
+                leaderboard_scores[i], leaderboard_scores[j] = leaderboard_scores[j], leaderboard_scores[i]
+            end
+        end
+    end
+    -- keep top 5
+    while #leaderboard_scores > 5 do
+        deli(leaderboard_scores)
+    end
+end
+
+
+function draw_char_select()
+    cls(0)
+    print("choose your frog", 36, 20, 11)
+
+    -- draw available options in a row
+    for i=1,5 do
+        local x = 24 + (i-1)*20
+        local y = 60
+        spr(i, x, y)
+        -- highlight selected sprite
+        if i == selected_char then
+            rect(x-2, y-2, x+9, y+9, 7)
+        end
+    end
+
+    print("use <- -> and x", 40, 100, 7)
+end
+
 
 -- homes (top row)
+homes = {}
 home_y = 4
 home_w = 16
 home_h = 8
@@ -48,12 +86,12 @@ car_spawn_delay = 40
 
 -- logs
 logs = {}
-log_speed_base = 0.8  -- increased base speed
-log_speed_range = 0.4 -- increased speed variation range
+log_speed_base = 0.6
+log_speed_range = 0.2
 log_spawn_timer = 0
-log_spawn_delay = 50  -- lowered the delay to increase spawn rate
+log_spawn_delay = 200
 log_w = 32
-log_h = 8             -- log height is now 8px (half of 16)
+log_h = 16
 
 -- progressive difficulty (per frame)
 car_speed_increment = 0.0008
@@ -77,7 +115,7 @@ function clamp(v, a, b)
     return v
 end
 
--- music control functions (from v2)
+-- music control functions
 function start_gameplay_music()
     gameplay_music_playing = true
     current_music_pattern = 0
@@ -92,7 +130,7 @@ end
 
 function start_gameover_music()
     stop_gameplay_music()
-    music(6, 0, 0)  -- start pattern 6 (assuming pattern 6 is game over music)
+    music(6, 0, 0)  -- start pattern 6
 end
 
 function update_gameplay_music()
@@ -111,39 +149,55 @@ end
 
 -- init
 function _init()
-    -- homes are now the entire top row, so we don't need a table of objects
+    -- homes (5 slots)
+				homes = {}
+				for i=0,4 do
+				    add(homes, {
+				        x = i * 24 + 8,
+				        y = home_y,
+				        sprite = 13 + flr(rnd(6))  -- random sprite 13-18
+				    })
+				end
+
     generate_map()
 end
 
 -- generate_map: top = homes, bottom = grass, middle 6 rows randomized
 function generate_map()
-    -- clear existing cars/logs to avoid leftover objects on wrong rows
     cars = {}
     logs = {}
+    water_subrow_timers = {}
 
     map_rows = {}
 
     -- row 1: homes
     add(map_rows, "homes")
 
-    -- middle 6 rows: mix of road, water, grass (two of each to keep variety)
+    -- middle 6 rows: shuffled mix
     local chunks = {"road","road","water","water","grass","grass"}
-
-    -- fisher-yates shuffle
     for i=#chunks,2,-1 do
         local j = flr(rnd(i)) + 1
         chunks[i], chunks[j] = chunks[j], chunks[i]
     end
-
     for c in all(chunks) do
         add(map_rows, c)
     end
 
-    -- row 8: bottom spawn grass
+    -- bottom row: grass
     add(map_rows, "grass")
+
+    -- initialize sub-row timers
+    local subrows_per_water_row = 3
+    for i=1,#map_rows do
+        if map_rows[i] == "water" then
+            water_subrow_timers[i] = {}
+            for sr=1,subrows_per_water_row do
+                water_subrow_timers[i][sr] = flr(rnd(log_spawn_delay)) -- start with random offset
+            end
+        end
+    end
 end
 
--- get y positions (top-left) for rows of a given type
 function get_row_y_positions(row_type)
     local ys = {}
     for i=1,#map_rows do
@@ -160,50 +214,49 @@ function add_car()
     local road_rows = get_row_y_positions("road")
     if #road_rows == 0 then return end
 
-    -- pick a random road row
-    local y = road_rows[flr(rnd(#road_rows))+1]
-
-    -- new: randomly pick upper (0) or lower (8) lane
-    local car_lane_offset = flr(rnd(2)) * 8
-
+    local y = road_rows[flr(rnd(#road_rows))+1] + 4 -- center inside 16px row
     local dir = rnd(2) > 1 and 1 or -1
     local sx = dir == 1 and -20 or 148
     local speed = dir * (car_speed + level * 0.35)
 
+    -- pick a sprite from 6-9
+    local sprite_choices = {6, 7, 8, 9}
+    local sprite_id = sprite_choices[flr(rnd(#sprite_choices)) + 1]
+
     add(cars, {
         x = sx,
-        y = y + car_lane_offset,  -- apply the lane offset
-        w = 12,
-        h = 6,
+        y = y,
         speed = speed,
-        color = 8 + flr(rnd(3))
+        sprite = sprite_id
     })
 end
 
 -- add a log on a random water row
-function add_log()
-    local water_rows = get_row_y_positions("water")
-    if #water_rows == 0 then return end
-
-    local y = water_rows[flr(rnd(#water_rows))+1]
-    
-    -- pick a random vertical position (upper or lower half) within the 16px row
-    local log_y = y
-    if flr(rnd(2)) == 1 then
-        log_y = y + 8
-    end
+function add_log(row_index, subrow_index)
+    local band_y = (row_index-1)*16
+    local subrows_per_water_row = 3
+    local y = band_y + (subrow_index-1)*(16 / subrows_per_water_row)
 
     local dir = rnd(2) > 1 and 1 or -1
     local sx = dir == 1 and -40 or 148
     local speed_variation = rnd(log_speed_range) - (log_speed_range/2)
     local speed = dir * (log_speed_base + speed_variation)
 
+    -- pick sprite 10, 11, 12
+    local sprite_choices = {10,11,12}
+    local sprite_id = sprite_choices[flr(rnd(#sprite_choices))+1]
+
+    -- log length
+    local log_length = flr(rnd(3)) + 2
+
     add(logs, {
         x = sx,
-        y = log_y, -- now using the new vertical position
-        w = log_w,
-        h = log_h,
-        speed = speed
+        y = y,
+        speed = speed,
+        sprite = sprite_id,
+        length = log_length,
+        row = row_index,
+        subrow = subrow_index
     })
 end
 
@@ -233,22 +286,25 @@ function update_frog()
         frog_y = frog_target_y
     end
 
-    -- check if reached the top row (home)
-    if frog_y < 12 then
-        -- score
-        score = score + (100 * level)
-        level = level + 1
-        -- increase difficulty on scoring
-        car_speed = car_speed + 0.2
-        log_speed_base = log_speed_base + 0.1
-        -- regenerate map and clear dynamic objects
-        generate_map()
-        -- reset frog to start position
-        frog_target_x = 64
-        frog_target_y = 112
-        frog_x = frog_target_x
-        frog_y = frog_target_y
-        return
+    -- check if reached any home slot (top row)
+    for home in all(homes) do
+        if frog_x + frog_size > home.x and frog_x < home.x + home_w and
+           frog_y + frog_size > home.y and frog_y < home.y + home_h then
+            -- score
+            score = score + (100 * level)
+            level = level + 1
+            -- increase difficulty on scoring
+            car_speed = car_speed + 0.2
+            log_speed_base = log_speed_base + 0.1
+            -- regenerate map and clear dynamic objects
+            generate_map()
+            -- reset frog to start position
+            frog_target_x = 64
+            frog_target_y = 112
+            frog_x = frog_target_x
+            frog_y = frog_target_y
+            return
+        end
     end
 end
 
@@ -256,13 +312,16 @@ end
 function check_collisions()
     if game_state ~= playing then return end
 
-    -- car collisions
+    -- car collisions (unchanged)
     for car in all(cars) do
-        if frog_x < car.x + car.w and
-           frog_x + frog_size > car.x and
-           frog_y < car.y + car.h and
-           frog_y + frog_size > car.y then
-            -- hit
+    					local car_w = 16
+									local car_h = 8
+									if frog_x < car.x + car_w and
+									   frog_x + frog_size > car.x and
+									   frog_y < car.y + car_h and
+									   frog_y + frog_size > car.y then
+
+         -- hit
             lives = lives - 1
             frog_target_x = 64
             frog_target_y = 112
@@ -270,7 +329,7 @@ function check_collisions()
             frog_y = frog_target_y
             if lives <= 0 then
                 game_state = game_over
-                start_gameover_music() -- start game over music
+                start_gameover_music()
             end
             return
         end
@@ -290,13 +349,18 @@ function check_collisions()
         -- check logs for carry
         local on_log = false
         for log in all(logs) do
-            if frog_x + frog_size > log.x and frog_x < log.x + log.w and
-               frog_y + frog_size > log.y and frog_y < log.y + log.h then
-                on_log = true
-                -- carry frog with log
-                frog_x = frog_x + log.speed
-                frog_target_x = frog_target_x + log.speed
-                break
+            -- compute log width in px
+            local log_w_px = log.length * 8
+            -- vertical overlap: frog and log (log.y is band_y + 4, frog_y tends to be multiples of 8)
+            if frog_y + frog_size > log.y and frog_y < log.y + 8 then
+                -- horizontal overlap
+                if frog_x + frog_size > log.x and frog_x < log.x + log_w_px then
+                    on_log = true
+                    -- carry frog with log's horizontal speed
+                    frog_x = frog_x + log.speed
+                    frog_target_x = frog_target_x + log.speed
+                    break
+                end
             end
         end
 
@@ -309,7 +373,7 @@ function check_collisions()
             frog_y = frog_target_y
             if lives <= 0 then
                 game_state = game_over
-                start_gameover_music() -- start game over music
+                start_gameover_music()
             end
             return
         end
@@ -321,7 +385,6 @@ function check_collisions()
     frog_y = clamp(frog_y, 0, 120)
     frog_target_y = clamp(frog_target_y, 0, 120)
 end
-
 -- update cars: move and remove off-screen
 function update_cars()
     for car in all(cars) do
@@ -340,17 +403,29 @@ end
 
 -- update logs
 function update_logs()
+    -- move logs & remove off-screen
     for log in all(logs) do
-        log.x = log.x + log.speed
-        if log.x < -80 or log.x > 200 then
+        log.x += log.speed
+        local width = log.length * 8
+        if log.x + width < -40 or log.x > 200 then
             del(logs, log)
         end
     end
 
-    log_spawn_timer = log_spawn_timer + 1
-    if log_spawn_timer >= log_spawn_delay then
-        add_log()
-        log_spawn_timer = 0
+    local subrows_per_water_row = 3
+
+    -- spawn logs per water sub-row independently
+    for i=1,#map_rows do
+        if map_rows[i] == "water" then
+            for sr=1,subrows_per_water_row do
+                water_subrow_timers[i][sr] += 1
+                local delay_with_jitter = log_spawn_delay + flr(rnd(10)) - 5
+                if water_subrow_timers[i][sr] >= delay_with_jitter then
+                    add_log(i, sr)
+                    water_subrow_timers[i][sr] = 0
+                end
+            end
+        end
     end
 end
 
@@ -364,12 +439,15 @@ function draw_terrain(rows, dx, dy)
     end
 end
 
--- draw homes (top row visuals)
+-- draw homes (top row visuals + home slots)
 function draw_homes_row()
-    -- draw a background for the entire top bar
-    rectfill(0, 0, 127, 15, 10) -- y coordinates 0 to 15 (a 16px band)
-    rect(0, 0, 127, 15, 0)
+    for h in all(homes) do
+        local sx = (h.sprite % 16) * 8
+        local sy = flr(h.sprite / 16) * 8
+        sspr(sx, sy, 8, 8, h.x, h.y, 16, 12)  -- draw scaled 16x16
+    end
 end
+
 
 -- draw background based on map_rows
 function draw_background()
@@ -378,16 +456,13 @@ function draw_background()
         local row = map_rows[i]
         local y = (i-1) * 16
         if row == "grass" then
-            draw_terrain(tile_grass, 0, y)
-            draw_terrain(tile_grass, 64, y)
+            rectfill(0, y, 127, y+15, 11) -- green grass
         elseif row == "road" then
-            draw_terrain(tile_road, 0, y)
-            draw_terrain(tile_road, 64, y)
+            rectfill(0, y, 127, y+15, 5) -- gray road
         elseif row == "water" then
-            draw_terrain(tile_water, 0, y)
-            draw_terrain(tile_water, 64, y)
+            rectfill(0, y, 127, y+15, 12) -- blue water
         elseif row == "homes" then
-            -- draw top row background
+            rectfill(0, y, 127, y+15, 3) -- white homes row
             draw_homes_row()
         end
     end
@@ -396,265 +471,167 @@ end
 -- draw dynamic objects
 function draw_logs()
     for log in all(logs) do
-        rectfill(log.x, log.y, log.x + log.w, log.y + log.h, 6)
-        rect(log.x, log.y, log.x + log.w, log.y + log.h, 0)
+    for i=0,log.length-1 do
+        spr(log.sprite, log.x + i*8, log.y)
     end
+end
 end
 
 function draw_cars()
+				palt(0,false)	
     for car in all(cars) do
-        rectfill(car.x, car.y, car.x + car.w, car.y + car.h, car.color)
-        rect(car.x, car.y, car.x + car.w, car.y + car.h, 0)
+        -- sspr(sx, sy, sw, sh, dx, dy, dw, dh)
+        -- car.sprite is the id 6-9
+        local sx = (car.sprite % 16) * 8  -- x in sprite sheet
+        local sy = flr(car.sprite / 16) * 8 -- y in sprite sheet
+
+        sspr(sx, sy, 8, 8, car.x, car.y, 15, 15)
     end
 end
 
+
 function draw_frog()
-    spr(1, frog_x, frog_y) -- assumes sprite 1 is frog (8x8)
+    palt(6,true)
+    spr(frog_sprite, frog_x, frog_y)
 end
 
--- ui (now with intro screen and better game over)
+
+-- ui
 function draw_ui()
     if game_state == menu then
-        print("frogger", 44, 52, 11)
-        print("press x for instructions", 22, 68, 7)
+        print("frogger+", 44, 40, 11)
+        print("press x for intro", 28, 60, 7)
     elseif game_state == intro then
         print("instructions", 40, 20, 11)
         print("⬅️➡️⬆️⬇️ move frog", 20, 40, 7)
         print("avoid cars, ride logs", 20, 50, 7)
         print("reach homes to score", 20, 60, 7)
         print("press x to play", 32, 90, 7)
-    elseif game_state == playing then
-        -- draw a background for the score
-        rectfill(0, 0, 48, 8, 1)  -- dark blue background for score text
-        print("score: "..score, 2, 2, 7)
-
-        -- draw a background for lives
-        rectfill(0, 10, 48, 18, 1) -- dark blue background for lives text
-        print("lives: "..lives, 2, 10, 7)
-
-        -- draw a background for the level
-        rectfill(88, 0, 127, 8, 1) -- dark blue background for level text
-        print("level: "..level, 90, 2, 7)
     elseif game_state == paused then
         print("paused", 52, 56, 7)
         print("press o to resume", 26, 70, 7)
         print("press x for menu", 28, 80, 7)
     elseif game_state == game_over then
-        print("game over", 36, 50, 8)
-        print("final score: "..score, 28, 64, 7)
-        print("high score: "..high_score, 28, 72, 7)
-        print("press x to restart", 22, 88, 7)
+        print("game over", 44, 40, 8)
+        print("final score: "..score, 36, 55, 7)
+        print("press x for leaderboard", 20, 75, 7)
+    elseif game_state == leaderboard then
+        print("leaderboard", 40, 20, 11)
+        for i=1,#leaderboard_scores do
+            print(i..". "..leaderboard_scores[i], 40, 30+i*10, 7)
+        end
+        print("press x for menu", 28, 100, 7)
+    elseif game_state == playing then
+        print("score: "..score, 2, 2, 0) -- black
+        print("lives: "..lives, 2, 10, 0) -- black
+        print("level: "..level, 90, 2, 0) -- black
     end
 end
 
 -- main update
 function _update()
-    -- global controls based on game state
     if game_state == menu then
-        if btnp(5) then -- x to go to intro
-            game_state = intro
+        if btnp(5) then
+            game_state = intro  -- go to character selection from menu
         end
-    elseif game_state == intro then
-        if btnp(5) then -- x to start game
-            -- reset core game vars
+
+    elseif game_state == char_select then
+        -- move selection left/right
+        if btnp(0) then
+            selected_char = selected_char - 1
+            if selected_char < 1 then selected_char = 5 end
+        end
+        if btnp(1) then
+            selected_char = selected_char + 1
+            if selected_char > 5 then selected_char = 1 end
+        end
+
+        -- confirm selection with x button
+        if btnp(5) then
+            frog_sprite = selected_char  -- save chosen frog
             score = 0
-            level = 1
             lives = 3
+            level = 1
             car_speed = 1
             log_speed_base = 0.6
-            cars = {}
-            logs = {}
+            cars = {} logs = {}
             car_spawn_timer = 0
             log_spawn_timer = 0
             generate_map()
-            frog_target_x = 64
-            frog_target_y = 112
-            frog_x = frog_target_x
-            frog_y = frog_target_y
+            frog_x, frog_y = 64, 112
+            frog_target_x, frog_target_y = frog_x, frog_y
             game_state = playing
-            start_gameplay_music() -- start music
-        end
-    elseif game_state == playing then
-        -- input pause
-        if btnp(4) then 
-            game_state = paused 
-            stop_gameplay_music()
+            start_gameplay_music()
         end
 
-        -- progressive difficulty over time
-        car_speed = car_speed + car_speed_increment
-        log_speed_base = log_speed_base + log_speed_increment
-        
-        update_gameplay_music() -- update music
+    elseif game_state == intro then
+        if btnp(5) then
+            game_state = char_select
+        end
+
+    elseif game_state == playing then
+        if btnp(4) then game_state = paused end
+        car_speed += car_speed_increment
+        log_speed_base += log_speed_increment
+        update_gameplay_music()
         update_frog()
         update_cars()
         update_logs()
         check_collisions()
 
     elseif game_state == paused then
-        if btnp(4) then 
-            game_state = playing 
-            start_gameplay_music() -- resume music
-        end
-        if btnp(5) then 
-            game_state = menu 
-            stop_gameplay_music() -- stop music for menu
-        end
+        if btnp(4) then game_state = playing end
+        if btnp(5) then game_state = menu stop_gameplay_music() end
+
     elseif game_state == game_over then
-        -- update high score if the current score is higher
-        if score > high_score then
-            high_score = score
-        end
         if btnp(5) then
-            -- restart to menu (user can start fresh)
+            add_score(score)
+            game_state = leaderboard
+        end
+
+    elseif game_state == leaderboard then
+        if btnp(5) then
             game_state = menu
         end
     end
 end
 
+
 -- main draw
 function _draw()
     cls(0)
-    
-    if game_state == playing then
+    palt(6,true)
+
+    if game_state == char_select then
+        draw_char_select()
+    elseif game_state == playing or game_state == game_over then
         draw_background()
-        -- draw dynamic things in sensible order
         draw_logs()
         draw_cars()
         draw_frog()
     end
-    
+
     draw_ui()
 end
+
+
 __gfx__
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00700700001707100037073000270720004707400027072000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00077000001ccc10003bbb30002eee2000499940002ddd2000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00077000000c1c00000b3b00000e2e0000094900000d2d0000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00700700001ccc10003bbb30002eee2000499940002ddd2000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000001000100030003000200020004000400020002000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-cccccccccccccccccccccc777cccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-cccccccccccccccccc77777777ccccccccccccccccccccccccc7777777777cccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-cccccccccccccccc77ccccccc77ccccccccccccccccccccc777ccccccccc77ccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-cccccccc77ccccc77ccccccccc77cccccccccccc77ccccc77cccccccccccc77cdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-ccccccc777777c7ccccccccccccc7cccccccccc777777c7cccccccccccccccc7dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-ccccc77ccccc777cccccccccccccc7ccccccc77ccccc777cccccccccccccccccaaaadddaaaaaadddaaaaaddaaaaaadddaaaadddaaaaaadddaaaaaddaaaaaaddd
-7ccc77ccccccccccccccccccccccc77c7ccc77ccccccccccccccccccccccccccaaaadddaaaaaadddaaaaaddaaaaaadddaaaadddaaaaaadddaaaaaddaaaaaaddd
-77777cccccccccccccccccccccccccc777777cccccccccccccccccccccccccccaaaadddaaaaaadddaaaaaddaaaaaadddaaaadddaaaaaadddaaaaaddaaaaaaddd
-ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccaaaadddaaaaaadddaaaaaddaaaaaadddaaaadddaaaaaadddaaaaaddaaaaaaddd
-cccc777ccccccccccccccccccccccccccccc777cccccccccccccccccccccccccaaaadddaaaaaadddaaaaaddaaaaaadddaaaadddaaaaaadddaaaaaddaaaaaaddd
-ccc77c77ccccccccccccccccccccccccccc77c77ccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-c77ccccc77cccc7777ccccccccccccccc77ccccc77cccc777777ccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-7ccccccccc77777cc77cccc7777ccc7777cccccccc77777ccccc7777ccccc777dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-ccccccccccccccccccc77777c777777ccccccccccccccccccccccccc777777ccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-33333333333333333333333333333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000000
-33333333333333333333333333333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000000
-33333333333333333333333333333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000000
-3333bb33333333333333bb33333333333333bb33333333333333bb33333333330000000000000000000000000000000000000000000000000000000000000000
-333b3bb333333333333b3bb333333333333b3bb333333333333b3bb3333333330000000000000000000000000000000000000000000000000000000000000000
-33b333bb3333333333b333bb3333333333b333bb3333333333b333bb333333330000000000000000000000000000000000000000000000000000000000000000
-3bb3333bb33333333bb3333bb33333333bb3333bb33333333bb3333bb33333330000000000000000000000000000000000000000000000000000000000000000
-33333333333333333333333333333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000000
-33333333333333333333333333333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000000
-333333333333bb33333333333333bb33333333333333bb33333333333333bb330000000000000000000000000000000000000000000000000000000000000000
-333333333333bb33333333333333bb33333333333333bb33333333333333bb330000000000000000000000000000000000000000000000000000000000000000
-33333333333b3bb333333333333b3bb333333333333b3bb333333333333b3bb30000000000000000000000000000000000000000000000000000000000000000
-3333333333bb33bb3333333333bb33bb3333333333bb33bb3333333333bb33bb0000000000000000000000000000000000000000000000000000000000000000
-3333333333b3333b3333333333b3333b3333333333b3333b3333333333b3333b0000000000000000000000000000000000000000000000000000000000000000
-33333333333333333333333333333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000000
-33333333333333333333333333333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000000
+00000000666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666446666662266666611666
+0000000066666666666666666666666666666666666666666bbb0c666eee0c6669990c666ccc0d66666666666666666666666666644444466222222661111116
+0070070066176716663767366627672666476746662767263bbb0c032eee0c0249990c041ccc0d0199944999eee22eeebbb33bbb444444442222222211111111
+00077000661ccc1666333336662eee2666499946662ddd263bbb0c032eee0c0249990c041ccc0d014499994422eeee2233bbbb33444444442222222211111111
+00077000666c1c666663b366666e2e6666694966666d2d663bbbbb332eeeee22499999441ccccc114444444422222222333333336ffffff66dddddd66cccccc6
+00700700661ccc1666333336662eee2666499946662ddd26600660066006600660066006600660064499994422eeee2233bbbb336f7447f66d7227d66c7117c6
+000000006616661666366636662666266646664666266626666666666666666666666666666666666666666666666666666666666ff44ff66dd22dd66cc11cc6
+000000006666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666ff44ff66dd22dd66cc11cc6
+66644666666996666668866600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+64444446699999966888888600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+44444444999999998888888800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+44444444999999998888888800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+6bbbbbb66aaaaaa66eeeeee600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+6b7447b66a7997a66e7887e600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+6bb44bb66aa99aa66ee88ee600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+6bb44bb66aa99aa66ee88ee600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __sfx__
 000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
